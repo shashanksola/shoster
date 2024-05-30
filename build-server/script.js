@@ -1,9 +1,9 @@
 const { exec } = require('child_process');
+require('dotenv').config();
 const { readdirSync, lstatSync, createReadStream } = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const mime = require('mime-types');
-const { error } = require('console');
 
 const s3Client = new S3Client({
     region: 'ap-south-1',
@@ -40,11 +40,12 @@ async function init() {
             distFolderPath = path.join(__dirname, 'output', 'dist');
             distFolderContents = readdirSync(distFolderPath, { recursive: true });
         } catch (e) {
-            console.error(`Error: Cannot find dist folder, exiting...`)
-            process.exit(1);
+            console.error(`Error: Cannot find dist folder, Searching build...`);
+            distFolderPath = path.join(__dirname, "output", "build");
+            distFolderContents = readdirSync(distFolderPath, { recursive: true });
         }
 
-        console.log('Starting to Upload')
+        console.log('Starting to Upload');
         for (const file of distFolderContents) {
             const filePath = path.join(distFolderPath, file);
             if (lstatSync(filePath).isDirectory()) continue;
@@ -65,3 +66,4 @@ async function init() {
 }
 
 init();
+console.log(process.env.BUCKET_NAME);
