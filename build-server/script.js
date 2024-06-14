@@ -18,6 +18,7 @@ const s3Client = new S3Client({
 })
 
 const publisher = new Redis(`rediss://default:${REDIS_PASS}@shoster-logs-shashanksola1010-8056.i.aivencloud.com:16742`);
+publisher.on('connection', () => console.log('Redis Connected'));
 
 async function publishLog(log) {
     console.log(log);
