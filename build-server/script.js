@@ -1,9 +1,13 @@
-const { exec } = require('child_process');
 require('dotenv').config();
+const { exec } = require('child_process');
 const { readdirSync, lstatSync, createReadStream } = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const mime = require('mime-types');
+const { Redis } = require('ioredis')
+
+const PROJECT_ID = process.env.PROJECT_ID;
+const REDIS_PASS = process.env.REDIS_PASS;
 
 const s3Client = new S3Client({
     region: 'ap-south-1',
@@ -13,10 +17,15 @@ const s3Client = new S3Client({
     }
 })
 
-const PROJECT_ID = process.env.PROJECT_ID;
+const publisher = new Redis(`rediss://default:${REDIS_PASS}@shoster-logs-shashanksola1010-8056.i.aivencloud.com:16742`);
+
+async function publishLog(log) {
+    publisher.publish(`logs:${PROJECT_ID}`, JSON.stringify({ log }))
+}
 
 async function init() {
     console.log(`Reading Repository...`);
+    publishLog(`Build Started....`);
 
     const outDirPath = path.join(__dirname, 'output');
 
@@ -24,14 +33,17 @@ async function init() {
 
     p.stdout.on('data', (data) => {
         console.log(data.toString());
+        publishLog(data.toString());
     });
 
     p.stderr.on('error', (error) => {
         console.log(`Error : ${error}`);
+        publishLog(`Error : ${error}`)
     })
 
     p.on('close', async () => {
         console.log("Build Successful");
+        publishLog("Build Successful");
 
         let distFolderPath;
         let distFolderContents;
@@ -46,10 +58,12 @@ async function init() {
         }
 
         console.log('Starting to Upload');
+        publishLog('Starting to Upload');
         for (const file of distFolderContents) {
             const filePath = path.join(distFolderPath, file);
             if (lstatSync(filePath).isDirectory()) continue;
             console.log('Uploading ', filePath);
+            publishLog(`Uploading ${file}`);
 
             const command = new PutObjectCommand({
                 Bucket: process.env.BUCKET_NAME,
@@ -62,6 +76,7 @@ async function init() {
         }
 
         console.log(`S3 Upload Successfull`);
+        publishLog(`S3 Upload Successfull`);
     })
 }
 
