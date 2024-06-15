@@ -4,7 +4,7 @@ const { readdirSync, lstatSync, createReadStream } = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const mime = require('mime-types');
-const Redis = require('ioredis')
+const Redis = require('ioredis');
 
 const PROJECT_ID = process.env.PROJECT_ID;
 const REDIS_PASS = process.env.REDIS_PASS;
@@ -17,12 +17,18 @@ const s3Client = new S3Client({
     }
 })
 
-const publisher = new Redis(`rediss://default:${REDIS_PASS}@shoster-logs-shashanksola1010-8056.i.aivencloud.com:16742`);
-publisher.on('connection', () => console.log('Redis Connected'));
+const redis = new Redis({
+    port: 17549, // Redis port
+    host: "redis-17549.c212.ap-south-1-1.ec2.redns.redis-cloud.com", // Redis host
+    username: "default", // needs Redis >= 6
+    password: REDIS_PASS,
+    db: 0, // Defaults to 0
+});
+redis.on('connection', () => console.log('Redis Connected'));
 
 async function publishLog(log) {
     console.log(log);
-    publisher.publish(`logs:${PROJECT_ID}`, JSON.stringify({ log }))
+    redis.publish(`logs:${PROJECT_ID}`, JSON.stringify({ log }))
 }
 
 async function init() {
@@ -74,6 +80,7 @@ async function init() {
         }
 
         publishLog(`S3 Upload Successfull`);
+        process.exit(0);
     })
 }
 
