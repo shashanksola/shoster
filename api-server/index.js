@@ -4,6 +4,8 @@ const { ECSClient, RunTaskCommand } = require('@aws-sdk/client-ecs');
 require('dotenv').config();
 const Redis = require('ioredis');
 const { Server } = require('socket.io');
+const { z } = require("zod");
+const { error } = require('console');
 
 const app = express();
 const PORT = 9000;
@@ -44,6 +46,21 @@ const client = new ECSClient({
 app.use(express.json());
 
 app.post('/project', async (req, res) => {
+    const schema = z.object({
+        name: z.string(),
+        gitURL: z.string()
+    })
+    const safeParseResult = schema.safeParse(req.body);
+    const { name, gitURL } = req.body;
+
+    if (safeParseResult.error) return res.status(400).json({ error: safeParseResult.error });
+
+    const { } = safeParseResult.data;
+
+
+})
+
+app.post('/deploy', async (req, res) => {
     const { gitURL, slug } = req.body;
     const projectSlug = slug ? slug : generateSlug();
 
