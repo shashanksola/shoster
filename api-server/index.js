@@ -19,7 +19,7 @@ const prisma = new PrismaClient({});
 const clickclient = createClient({
     host: "https://shoster-clickhouse-shashanksola1010-8056.d.aivencloud.com:16742",
     username: "avnadmin",
-    password: "AVNS_mDthyyR-XfStcifKL5V",
+    password: process.env.CLICKHOUSE_PASS,
     database: "default",
 })
 
