@@ -2,24 +2,41 @@ const express = require('express');
 const { generateSlug } = require('random-word-slugs');
 const { ECSClient, RunTaskCommand } = require('@aws-sdk/client-ecs');
 require('dotenv').config();
-const Redis = require('ioredis');
+const cors = require('cors');
 const { Server } = require('socket.io');
 const { z } = require("zod");
-const { error } = require('console');
+const { PrismaClient } = require('@prisma/client');
+const { createClient } = require('@clickhouse/client');
+const { Kafka } = require('kafkajs');
+const { v4: uuidv4 } = require('uuid');
+const { readFileSync } = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = 9000;
-const REDIS_PASS = process.env.REDIS_PASS;
+const prisma = new PrismaClient({});
 
-const redis = new Redis({
-    port: 17549, // Redis port
-    host: "redis-17549.c212.ap-south-1-1.ec2.redns.redis-cloud.com", // Redis host
-    username: "default", // needs Redis >= 6
-    password: REDIS_PASS,
-    db: 0, // Defaults to 0
-});
+const clickclient = createClient({
+    host: "https://shoster-clickhouse-shashanksola1010-8056.d.aivencloud.com:16742",
+    username: "avnadmin",
+    password: "AVNS_mDthyyR-XfStcifKL5V",
+    database: "default",
+})
 
-redis.on('connection', () => console.log('connected to redis server'));
+const kafka = new Kafka({
+    clientId: `api-server`,
+    brokers: ['shoster-logs-shashanksola1010-8056.i.aivencloud.com:16754'],
+    sasl: {
+        username: process.env.KAFKA_USERNAME,
+        password: process.env.KAFKA_PASSWORD,
+        mechanism: 'plain'
+    },
+    ssl: {
+        ca: [readFileSync(path.join(__dirname, 'kafka.pem'), 'utf-8')]
+    }
+})
+
+const consumer = kafka.consumer({ groupId: 'api-server-logs-consumer' })
 
 const io = new Server({ cors: "*" });
 
@@ -44,6 +61,7 @@ const client = new ECSClient({
 
 
 app.use(express.json());
+app.use(cors());
 
 app.post('/project', async (req, res) => {
     const schema = z.object({
@@ -51,18 +69,33 @@ app.post('/project', async (req, res) => {
         gitURL: z.string()
     })
     const safeParseResult = schema.safeParse(req.body);
-    const { name, gitURL } = req.body;
 
     if (safeParseResult.error) return res.status(400).json({ error: safeParseResult.error });
 
-    const { } = safeParseResult.data;
+    const { name, gitURL } = safeParseResult.data;
 
+    const project = await prisma.project.create({
+        data: {
+            name, gitURL, subDomain: generateSlug()
+        }
+    })
 
+    return res.json({ status: 'success', data: { project } })
 })
 
 app.post('/deploy', async (req, res) => {
-    const { gitURL, slug } = req.body;
-    const projectSlug = slug ? slug : generateSlug();
+    const { projectId } = req.body;
+
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+
+    if (!project) return res.status(404).json({ error: 'Project Not Found' });
+
+    const deployment = await prisma.deployment.create({
+        data: {
+            project: { connect: { id: projectId } },
+            status: 'QUEUED'
+        }
+    })
 
     const command = new RunTaskCommand({
         cluster: process.env.CLUSTER,
@@ -81,8 +114,9 @@ app.post('/deploy', async (req, res) => {
                 {
                     name: 'builder-image',
                     environment: [
-                        { name: 'GIT_REPOSITORY__URL', value: gitURL },
-                        { name: 'PROJECT_ID', value: projectSlug }
+                        { name: 'GIT_REPOSITORY__URL', value: project.gitURL },
+                        { name: 'PROJECT_ID', value: projectId },
+                        { name: 'DEPLOYMENT_ID', value: deployment.id }
                     ]
                 }
             ]
@@ -91,19 +125,56 @@ app.post('/deploy', async (req, res) => {
 
     await client.send(command);
 
-    return res.json({ status: 'queued', data: { projectSlug, url: `http://${projectSlug}.locahost:8000` } })
+    return res.json({ status: 'queued', data: { deploymentId: deployment.id } })
 })
 
-async function innitRedisSubsription() {
-    console.log('Subscribed to logs....')
-    redis.psubscribe('logs:*')
-    redis.on('pmessage', (pattern, channel, message) => {
-        io.to(channel).emit('message', message)
+app.get('/logs/:id', async (req, res) => {
+    const id = req.params.id;
+    const logs = await clickclient.query({
+        query: `SELECT event_id, deployment_id, log, timestamp from log_events where deployment_id = {deployment_id:String}`,
+        query_params: {
+            deployment_id: id
+        },
+        format: 'JSONEachRow'
+    })
+
+    const rawLogs = await logs.json()
+
+    return res.json({ logs: rawLogs })
+})
+
+async function initKafkaConsumer() {
+    await consumer.connect();
+    await consumer.subscribe({ topics: ['container-logs'] });
+    await consumer.run({
+        autoCommit: false,
+        eachBatch: async function ({ batch, heartbeat, commitOffsetsIfNecessary, resolveOffset }) {
+            const messages = batch.messages;
+            console.log(`Received  ${messages.length} messages..`);
+            for (const message of messages) {
+                const stringMessage = message.value.toString()
+                const { PROJECT_ID, DEPLOYMENT_ID, log } = JSON.parse(stringMessage);
+                console.log({ log, DEPLOYMENT_ID });
+                try {
+                    const { query_id } = await clickclient.insert({
+                        table: 'log_events',
+                        values: [{ event_id: uuidv4(), deployment_id: DEPLOYMENT_ID, log }],
+                        format: 'JSONEachRow'
+                    })
+                    console.log(query_id);
+                    commitOffsetsIfNecessary(message.offset);
+                    await resolveOffset(message.offset);
+                    await heartbeat()
+                } catch (err) {
+                    console.log(err);
+                }
+            }
+        }
     })
 }
 
-innitRedisSubsription();
 
+initKafkaConsumer();
 app.listen(PORT, () => {
     console.log(`API Server running on ${PORT}`);
 });

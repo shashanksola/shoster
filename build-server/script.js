@@ -1,13 +1,31 @@
 require('dotenv').config();
 const { exec } = require('child_process');
-const { readdirSync, lstatSync, createReadStream } = require('fs');
+const { readdirSync, lstatSync, createReadStream, readFileSync } = require('fs');
 const path = require('path');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const mime = require('mime-types');
-const Redis = require('ioredis');
+const { Kafka } = require('kafkajs');
+
+
 
 const PROJECT_ID = process.env.PROJECT_ID;
-const REDIS_PASS = process.env.REDIS_PASS;
+const DEPLOYMENT_ID = process.env.DEPLOYMENT_ID;
+const KAFKA_BROKER = process.env.KAFKA_BROKER;
+
+const kafka = new Kafka({
+    clientId: `docker-build-server-${DEPLOYMENT_ID}`,
+    brokers: ['shoster-logs-shashanksola1010-8056.i.aivencloud.com:16754'],
+    sasl: {
+        username: process.env.KAFKA_USERNAME,
+        password: process.env.KAFKA_PASSWORD,
+        mechanism: 'plain'
+    },
+    ssl: {
+        ca: [readFileSync(path.join(__dirname, 'kafka.pem'), 'utf-8')]
+    }
+})
+
+const producer = kafka.producer();
 
 const s3Client = new S3Client({
     region: 'ap-south-1',
@@ -17,38 +35,33 @@ const s3Client = new S3Client({
     }
 })
 
-const redis = new Redis({
-    port: 17549, // Redis port
-    host: "redis-17549.c212.ap-south-1-1.ec2.redns.redis-cloud.com", // Redis host
-    username: "default", // needs Redis >= 6
-    password: REDIS_PASS,
-    db: 0, // Defaults to 0
-});
-redis.on('connection', () => console.log('Redis Connected'));
 
 async function publishLog(log) {
     console.log(log);
-    redis.publish(`logs:${PROJECT_ID}`, JSON.stringify({ log }))
+    await producer.send({ topic: 'container-logs', messages: [{ key: 'log', value: JSON.stringify({ PROJECT_ID, DEPLOYMENT_ID, log }) }] })
 }
 
 async function init() {
+
+    await producer.connect();
+
     console.log(`Reading Repository...`);
-    publishLog(`Build Started....`);
+    await publishLog(`Build Started....`);
 
     const outDirPath = path.join(__dirname, 'output');
 
     const p = exec(`cd ${outDirPath} && npm install && npm run build`);
 
-    p.stdout.on('data', (data) => {
-        publishLog(data.toString());
+    p.stdout.on('data', async (data) => {
+        await publishLog(data.toString());
     });
 
-    p.stderr.on('error', (error) => {
-        publishLog(`Error : ${error}`)
+    p.stderr.on('error', async (error) => {
+        await publishLog(`Error : ${error}`)
     })
 
     p.on('close', async () => {
-        publishLog("Build Successful");
+        await publishLog("Build Successful");
 
         let distFolderPath;
         let distFolderContents;
@@ -62,12 +75,12 @@ async function init() {
             distFolderContents = readdirSync(distFolderPath, { recursive: true });
         }
 
-        publishLog('Starting to Upload');
+        await publishLog('Starting to Upload');
         for (const file of distFolderContents) {
             const filePath = path.join(distFolderPath, file);
             if (lstatSync(filePath).isDirectory()) continue;
             console.log('Uploading ', filePath);
-            publishLog(`Uploading ${file}`);
+            await publishLog(`Uploading ${file}`);
 
             const command = new PutObjectCommand({
                 Bucket: process.env.BUCKET_NAME,
@@ -79,10 +92,8 @@ async function init() {
             await s3Client.send(command);
         }
 
-        publishLog(`S3 Upload Successfull`);
+        await publishLog(`S3 Upload Successfull`);
         process.exit(0);
     })
 }
-
 init();
-console.log(process.env.BUCKET_NAME);
